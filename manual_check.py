@@ -42,6 +42,19 @@ def pgrep_bash_i():
     return out.stdout.strip() or "(none)"
 
 
+async def deckd_process_ids(sock):
+    """Ask the daemon for its process ids (-l now lists decks, not processes)."""
+    client = await deckd.DeckClient.connect(sock)
+    try:
+        await client.send({"cmd": "list"})
+        while True:
+            msg = await client.messages.get()
+            if msg.get("msg") == "snapshot" and msg.get("processes"):
+                return [p["id"] for p in msg["processes"]]
+    finally:
+        await client.close()
+
+
 async def phase1(sock, meta):
     print("== phase 1: start TUI, add bash -i, detail follow, detach ==")
     m = await deckd.ensure_daemon(sock, meta)
@@ -60,7 +73,7 @@ async def phase1(sock, meta):
         await pilot.pause(1.0)
         print(f"detail screen open: {type(app.screen).__name__}")
         print(f"bash prompt followed live: {b'$' in app.captured}")
-        await pilot.press("escape")
+        await pilot.press("b")            # b = back to the list (esc goes to the pty)
         await pilot.pause()
         await pilot.press("d")            # detach: TUI closes, daemon stays
     await client.close()
@@ -108,7 +121,7 @@ async def phase2(sock, meta):
         lines = [ln for ln in text.splitlines() if MARK in ln]
         print(f"replay contains earlier '{MARK}': {MARK in text}")
         print(f"replayed lines: {lines}")
-        await pilot.press("escape")
+        await pilot.press("b")            # back to the list
         await pilot.pause()
         await pilot.press("q")            # stop daemon (confirm first)
         await pilot.pause()
@@ -126,8 +139,9 @@ def main():
 
     listing = subprocess.run([sys.executable, "-m", "cli_deck", "-l"],
                              capture_output=True, text=True)
-    print(f"cli-deck -l ->\n{listing.stdout.strip()}")
-    proc_id = listing.stdout.split()[0]
+    print(f"cli-deck -l (live decks) ->\n{listing.stdout.strip()}")
+    proc_id = asyncio.run(deckd_process_ids(sock))[0]
+    print(f"deck processes: {proc_id}")
     logs = deckd.deck_log_dir()
     print(f"deck log dir: {logs}")
     print(subprocess.run(["ls", "-l", str(logs)],

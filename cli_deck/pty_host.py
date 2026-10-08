@@ -17,11 +17,14 @@ DEFAULT_ROWS = 24
 DEFAULT_COLS = 80
 
 # SIGINT -> SIGTERM -> SIGKILL on the process group; None = no further wait.
+# Graces are short on purpose: the whole escalation must fit inside the
+# daemon's teardown budget (see deckd.TEARDOWN_BUDGET).
 KILL_ESCALATION: list[tuple[signal.Signals, float | None]] = [
-    (signal.SIGINT, 2.0),
-    (signal.SIGTERM, 2.0),
+    (signal.SIGINT, 1.0),
+    (signal.SIGTERM, 1.0),
     (signal.SIGKILL, None),
 ]
+KILL_REAP_TIMEOUT = 1.0  # bounded reap after SIGKILL; never wait forever
 
 
 @dataclass
@@ -89,7 +92,11 @@ def _set_winsize(fd: int, rows: int, cols: int) -> None:
 
 
 def kill(handle: PtyHandle, escalation: list = KILL_ESCALATION) -> int | None:
-    """Escalate signals on the child's process group; return the exit code."""
+    """Escalate signals on the child's process group; return the exit code.
+
+    Always returns within the escalation budget: the final reap is bounded, so
+    a caller can never block on a child that refuses to be reaped.
+    """
     try:
         pgid = os.getpgid(handle.proc.pid)
     except ProcessLookupError:
@@ -107,7 +114,10 @@ def kill(handle: PtyHandle, escalation: list = KILL_ESCALATION) -> int | None:
             if code is not None:
                 return code
             time.sleep(0.05)
-    return handle.wait()
+    try:
+        return handle.wait(timeout=KILL_REAP_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return handle.poll()
 
 
 def close(handle: PtyHandle) -> None:

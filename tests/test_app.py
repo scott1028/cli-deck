@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import unittest
 from pathlib import Path
 
@@ -69,8 +70,16 @@ class AppSmokeTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(takeovers, ["abc123"])
 
-            # escape leaves detail, unsubscribing first
+            # escape is the child's key: forwarded to the pty, not navigation
             await pilot.press("escape")
+            await pilot.pause()
+            self.assertIsInstance(app.screen, DetailScreen)
+            self.assertIn({"cmd": "attach_input", "id": "abc123",
+                           "data": base64.b64encode(b"\x1b").decode()},
+                          client.sent)
+
+            # b leaves detail, unsubscribing first
+            await pilot.press("b")
             await pilot.pause()
             self.assertNotIsInstance(app.screen, DetailScreen)
             self.assertIn({"cmd": "attach", "id": None}, client.sent)

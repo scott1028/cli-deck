@@ -22,7 +22,9 @@ import subprocess
 import sys
 import termios
 import time
+import traceback
 import tty
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import pty_host
@@ -31,14 +33,25 @@ from .registry import Registry, STATE_EXITED, STATE_STOPPING
 SOCKET_CONNECT_TIMEOUT = 5.0
 TAKEOVER_DETACH_KEY = b"\x1d"  # Ctrl-]
 
+# Teardown must be deterministic and bounded: every step below has its own
+# timeout, and the sum stays inside TEARDOWN_BUDGET so a daemon always leaves
+# within ~5s of `stop`/SIGINT/SIGTERM instead of lingering as a ghost.
+TEARDOWN_BUDGET = 5.0
+SERVER_CLOSE_TIMEOUT = 1.0
+CLIENT_CLOSE_TIMEOUT = 1.0
+KILL_CLOSE_TIMEOUT = 3.0
+
 
 def runtime_dir() -> Path:
     return Path(f"/tmp/cli-deck-{os.getuid()}")
 
 
+def deck_name(name: str | None = None) -> str:
+    return name or os.environ.get("CLI_DECK_NAME", "default")
+
+
 def deck_digest(name: str | None = None) -> str:
-    name = name or os.environ.get("CLI_DECK_NAME", "default")
-    return hashlib.sha256(name.encode()).hexdigest()[:12]
+    return hashlib.sha256(deck_name(name).encode()).hexdigest()[:12]
 
 
 def deck_paths(name: str | None = None) -> tuple[Path, Path]:
@@ -62,6 +75,84 @@ def read_meta(meta_path: Path) -> dict | None:
         return json.loads(meta_path.read_text())
     except (OSError, ValueError):
         return None
+
+
+def pid_alive(pid: object) -> bool:
+    """True when `pid` is an existing process we can signal."""
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, OverflowError):
+        return False
+    return True
+
+
+def sweep_stale_decks(rdir: Path | None = None) -> list[Path]:
+    """Remove <digest>.json/.sock pairs whose recorded daemon pid is gone.
+
+    A daemon killed hard (SIGKILL, crash) never runs its stop path, so its
+    files would otherwise pile up in the runtime dir forever.
+    """
+    rdir = rdir or runtime_dir()
+    removed: list[Path] = []
+    try:
+        meta_paths = sorted(rdir.glob("*.json"))
+    except OSError:
+        return removed
+    for meta_path in meta_paths:
+        meta = read_meta(meta_path)
+        if meta is None:  # not ours to judge: leave unreadable files alone
+            continue
+        if pid_alive(meta.get("pid")):
+            continue
+        removed.append(meta_path)
+        for path in (meta_path, rdir / f"{meta_path.stem}.sock"):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+    return removed
+
+
+def list_decks(rdir: Path | None = None) -> list[dict]:
+    """Metadata of every deck whose recorded daemon pid is still alive."""
+    rdir = rdir or runtime_dir()
+    decks: list[dict] = []
+    try:
+        meta_paths = sorted(rdir.glob("*.json"))
+    except OSError:
+        return decks
+    for meta_path in meta_paths:
+        meta = read_meta(meta_path)
+        if meta is None or not pid_alive(meta.get("pid")):
+            continue
+        meta.setdefault("name", meta_path.stem)
+        meta.setdefault("socket", str(rdir / f"{meta_path.stem}.sock"))
+        decks.append(meta)
+    return decks
+
+
+def format_age(seconds: float) -> str:
+    """Age of a deck for `cli-deck -l`: 45s / 12m03s / 3h15m."""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m{seconds % 60:02d}s"
+    return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
+
+
+async def _bounded(awaitable, timeout: float) -> None:
+    """Await `awaitable`, giving up after `timeout` instead of hanging."""
+    try:
+        await asyncio.wait_for(awaitable, timeout)
+    except (asyncio.TimeoutError, ConnectionError, OSError):
+        pass
 
 
 async def socket_alive(socket_path: Path) -> bool:
@@ -116,6 +207,7 @@ class _ClientConn:
         self.writer = writer
         self.subscribed: str | None = None
         self._lock = asyncio.Lock()
+        self._drain_tasks: set[asyncio.Task] = set()
 
     async def send(self, msg: dict) -> None:
         data = (json.dumps(msg) + "\n").encode()
@@ -132,7 +224,14 @@ class _ClientConn:
             self.writer.write((json.dumps(msg) + "\n").encode())
         except (ConnectionError, OSError):
             return
-        asyncio.ensure_future(self._drain())
+        task = asyncio.ensure_future(self._drain())
+        self._drain_tasks.add(task)
+        task.add_done_callback(self._drain_tasks.discard)
+
+    def cancel_pending(self) -> None:
+        """Cancel fire-and-forget drains so teardown has nothing left to wait on."""
+        for task in list(self._drain_tasks):
+            task.cancel()
 
     async def _drain(self) -> None:
         try:
@@ -142,18 +241,29 @@ class _ClientConn:
 
 
 class DeckDaemon:
-    def __init__(self, socket_path: Path, meta_path: Path, logs: Path) -> None:
+    def __init__(self, socket_path: Path, meta_path: Path, logs: Path,
+                 name: str | None = None, hard_exit: bool = False) -> None:
         self.socket_path = socket_path
         self.meta_path = meta_path
         self.logs = logs
+        self.name = deck_name(name)
+        # hard_exit is only set for the real daemon process: teardown then has
+        # a watchdog that force-exits, so no wedged cleanup can keep it alive.
+        self.hard_exit = hard_exit
         self.registry = Registry()
         self.handles: dict[str, pty_host.PtyHandle] = {}
         self.log_files: dict[str, object] = {}
         self.clients: set[_ClientConn] = set()
         self._client_tasks: set[asyncio.Task] = set()
-        self._kill_tasks: set[asyncio.Task] = set()
+        # In-flight kill futures: held so they are not garbage collected while
+        # running; teardown re-kills whatever is still alive, it does not join.
+        self._kill_tasks: set[asyncio.Future] = set()
         self._server: asyncio.Server | None = None
         self._stopping = asyncio.Event()
+        # Our own pool: the loop's default executor is joined by asyncio.run()
+        # teardown, so a kill thread parked there keeps the process alive.
+        self._executor = ThreadPoolExecutor(max_workers=8,
+                                            thread_name_prefix="deck-kill")
 
     async def run(self) -> None:
         try:
@@ -178,6 +288,7 @@ class DeckDaemon:
             "pid": os.getpid(),
             "started_at": time.time(),
             "log_dir": str(self.logs),
+            "name": self.name,
         }))
         try:
             await self._stopping.wait()
@@ -185,25 +296,74 @@ class DeckDaemon:
             await self._shutdown()
 
     async def _shutdown(self) -> None:
-        for task in list(self._kill_tasks):
-            await asyncio.wait({task}, timeout=10)
-        for handle in list(self.handles.values()):
-            await asyncio.to_thread(pty_host.kill, handle)
+        loop = asyncio.get_running_loop()
+        self._clear_signal_handlers(loop)
+        watchdog = (loop.call_later(TEARDOWN_BUDGET, self._force_exit)
+                    if self.hard_exit else None)
+        try:
+            await self._teardown(loop)
+        finally:
+            if watchdog is not None:
+                watchdog.cancel()
+            self._remove_files()
+
+    async def _teardown(self, loop: asyncio.AbstractEventLoop) -> None:
+        if self._server is not None:
+            self._server.close()
+            await _bounded(self._server.wait_closed(), SERVER_CLOSE_TIMEOUT)
+        for conn in self.clients:
+            conn.cancel_pending()
+        for task in list(self._client_tasks):
+            task.cancel()
+        if self._client_tasks:
+            await _bounded(asyncio.gather(*self._client_tasks,
+                                          return_exceptions=True),
+                           CLIENT_CLOSE_TIMEOUT)
+        handles = list(self.handles.values())
+        self.handles.clear()
+        for handle in handles:
+            self._detach_reader(handle)  # no callbacks while the children die
+        if handles:
+            kills = [loop.run_in_executor(self._executor, pty_host.kill, handle)
+                     for handle in handles]
+            _, pending = await asyncio.wait(kills, timeout=KILL_CLOSE_TIMEOUT)
+            for future in pending:
+                future.cancel()
+        for handle in handles:
             pty_host.close(handle)
         for fh in self.log_files.values():
             fh.close()
         self.log_files.clear()
-        for task in list(self._client_tasks):
-            task.cancel()
-        if self._client_tasks:
-            await asyncio.gather(*self._client_tasks, return_exceptions=True)
-        if self._server is not None:
-            self._server.close()
+        # Never join kill threads: they are bounded, and the process exits right
+        # after this, so a parked thread cannot turn into a ghost daemon.
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
+    def _force_exit(self) -> None:
+        """Teardown overran its budget: drop our files and leave the process."""
+        self._remove_files()
+        os._exit(0)
+
+    def _remove_files(self) -> None:
         for path in (self.socket_path, self.meta_path):
             try:
                 path.unlink()
             except FileNotFoundError:
                 pass
+
+    def _clear_signal_handlers(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Restore default dispositions so a second SIGINT/SIGTERM can end a
+        teardown that has wedged."""
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.remove_signal_handler(sig)
+            except (ValueError, RuntimeError, NotImplementedError):
+                pass
+
+    def _detach_reader(self, handle: pty_host.PtyHandle) -> None:
+        try:
+            asyncio.get_running_loop().remove_reader(handle.master_fd)
+        except (OSError, ValueError):
+            pass
 
     # -- client connections -------------------------------------------------
 
@@ -297,7 +457,9 @@ class DeckDaemon:
             return
         record.state = STATE_STOPPING
         self._broadcast_snapshot()
-        task = asyncio.create_task(asyncio.to_thread(pty_host.kill, handle))
+        task = asyncio.ensure_future(
+            asyncio.get_running_loop().run_in_executor(self._executor,
+                                                       pty_host.kill, handle))
         self._kill_tasks.add(task)
         task.add_done_callback(self._kill_tasks.discard)
 
@@ -363,10 +525,7 @@ class DeckDaemon:
         handle = self.handles.pop(proc_id, None)
         record = self.registry.get(proc_id)
         if handle is not None:
-            try:
-                asyncio.get_running_loop().remove_reader(handle.master_fd)
-            except (OSError, ValueError):
-                pass
+            self._detach_reader(handle)
             pty_host.close(handle)
             code = handle.poll()
             if code is None:
@@ -539,7 +698,34 @@ def run_takeover(socket_path: Path, proc_id: str, in_fd: int, out_fd: int,
         sock.close()
 
 
-def run_daemon() -> int:
-    socket_path, meta_path = deck_paths()
-    asyncio.run(DeckDaemon(socket_path, meta_path, deck_log_dir()).run())
-    return 0
+def _close_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Cancel whatever is still pending, bounded, then close the loop."""
+    pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+    for task in pending:
+        task.cancel()
+    if pending:
+        try:
+            loop.run_until_complete(asyncio.wait(pending, timeout=1.0))
+        except RuntimeError:
+            pass
+    loop.close()
+
+
+def run_daemon(name: str | None = None) -> int:
+    socket_path, meta_path = deck_paths(name)
+    sweep_stale_decks()
+    daemon = DeckDaemon(socket_path, meta_path, deck_log_dir(name),
+                        name=deck_name(name), hard_exit=True)
+    # No asyncio.run(): its teardown joins the default executor's threads, and
+    # one parked kill thread there is what kept a stopped daemon alive.
+    loop = asyncio.new_event_loop()
+    status = 0
+    try:
+        loop.run_until_complete(daemon.run())
+    except Exception:
+        status = 1
+        traceback.print_exc()  # stderr is DEVNULL for a spawned daemon
+    finally:
+        _close_loop(loop)
+    # Leave the process directly: interpreter teardown joins non-daemon threads.
+    os._exit(status)

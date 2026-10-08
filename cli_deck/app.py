@@ -84,7 +84,7 @@ class DetailScreen(Screen):
     """
 
     BINDINGS = [
-        Binding("escape", "leave", "back"),
+        Binding("b", "leave", "back"),
         Binding("t", "takeover", "takeover"),
     ]
 
@@ -117,6 +117,12 @@ class DetailScreen(Screen):
 
     def action_takeover(self) -> None:
         self.app.takeover_process(self.proc_id)
+
+    def key_escape(self) -> None:
+        """ESC stays the child program's key (vim and friends need it):
+        forward it to the pty instead of using it for navigation."""
+        self.app.client_send({"cmd": "attach_input", "id": self.proc_id,
+                              "data": base64.b64encode(b"\x1b").decode()})
 
 
 class DeckApp(App):
