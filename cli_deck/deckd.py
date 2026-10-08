@@ -2,8 +2,9 @@
 
 Protocol (one JSON object per line, both directions):
   client -> daemon cmds: add, kill, list, attach, attach_input, winsize, stop
-  daemon -> client msgs: snapshot, attached, log, notice, error
-Binary payloads (pty input/output) travel base64-encoded.
+  daemon -> client msgs: snapshot, added, attached, log, notice, error
+Binary payloads (pty input/output) travel base64-encoded. The `add` cmd may
+carry `cwd` and an `env` overlay for the child; env values are never logged.
 """
 from __future__ import annotations
 
@@ -153,6 +154,20 @@ async def _bounded(awaitable, timeout: float) -> None:
         await asyncio.wait_for(awaitable, timeout)
     except (asyncio.TimeoutError, ConnectionError, OSError):
         pass
+
+
+def _child_env(overlay: object) -> dict[str, str] | None:
+    """Environment for a deck child: the caller's overlay, never the daemon's.
+
+    The overlay carries what `bash -ic` + ~/.bashrc cannot re-derive: session
+    exports (FOO=bar), exported functions (BASH_FUNC_myfn%%) and PATH edits.
+    Values are never logged or stored in the registry.
+    """
+    if not isinstance(overlay, dict) or not overlay:
+        return None
+    env = {str(key): str(value) for key, value in overlay.items()}
+    env.setdefault("TERM", "xterm-256color")
+    return env
 
 
 async def socket_alive(socket_path: Path) -> bool:
@@ -428,13 +443,14 @@ class DeckDaemon:
             launch_argv = ["bash", "-i"]  # shell form
         name = msg.get("name") or (command or " ".join(launch_argv))
         cwd = msg.get("cwd") or os.getcwd()
+        child_env = _child_env(msg.get("env"))  # caller overlay; never logged
         record = self.registry.create(name, launch_argv, cwd)
         log_path = self.logs / f"{record.id}.log"
         record.log_path = str(log_path)
         try:
             self.logs.mkdir(parents=True, exist_ok=True)
             self.log_files[record.id] = open(log_path, "wb")
-            handle = pty_host.spawn(record.id, launch_argv, cwd)
+            handle = pty_host.spawn(record.id, launch_argv, cwd, env=child_env)
         except OSError as exc:
             self.registry.remove(record.id)
             fh = self.log_files.pop(record.id, None)
@@ -446,6 +462,8 @@ class DeckDaemon:
         asyncio.get_running_loop().add_reader(
             handle.master_fd, self._on_output, record.id)
         self._broadcast_snapshot()
+        await conn.send({"msg": "added", "id": record.id,
+                         "name": name, "cwd": cwd, "log_path": str(log_path)})
 
     async def _cmd_kill(self, conn: _ClientConn, msg: dict) -> None:
         proc_id = msg.get("id")
@@ -682,11 +700,20 @@ def run_takeover(socket_path: Path, proc_id: str, in_fd: int, out_fd: int,
                         msg = json.loads(line)
                     except ValueError:
                         continue
-                    if msg.get("msg") == "log" and msg.get("id") == proc_id:
+                    if msg.get("msg") == "attached" and msg.get("id") == proc_id:
+                        # Replay first: the command may have produced output
+                        # before this takeover connection subscribed.
+                        replay = msg.get("replay")
+                        if replay:
+                            os.write(out_fd, base64.b64decode(replay))
+                    elif msg.get("msg") == "log" and msg.get("id") == proc_id:
                         os.write(out_fd, base64.b64decode(msg.get("data", "")))
     finally:
         if old_attrs is not None:
-            termios.tcsetattr(in_fd, termios.TCSADRAIN, old_attrs)
+            try:
+                termios.tcsetattr(in_fd, termios.TCSADRAIN, old_attrs)
+            except (termios.error, OSError):
+                pass  # operator terminal already gone (pump driven from a thread)
         # Drain unread daemon messages (snapshot broadcasts) before closing:
         # an RST would discard the last attach_input still in flight.
         try:

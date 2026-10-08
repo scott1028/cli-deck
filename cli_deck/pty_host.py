@@ -45,8 +45,13 @@ class PtyHandle:
 
 
 def spawn(proc_id: str, argv: list[str], cwd: str | None = None,
-          rows: int = DEFAULT_ROWS, cols: int = DEFAULT_COLS) -> PtyHandle:
-    """Start argv in a new session with a pty as its controlling terminal."""
+          rows: int = DEFAULT_ROWS, cols: int = DEFAULT_COLS,
+          env: dict[str, str] | None = None) -> PtyHandle:
+    """Start argv in a new session with a pty as its controlling terminal.
+
+    `env` replaces the daemon's environment for the child when given: the
+    daemon's own env is not the wrapper caller's, so the overlay carries it.
+    """
     master_fd, slave_fd = pty.openpty()
     _set_winsize(master_fd, rows, cols)
     workdir = cwd or os.getcwd()
@@ -57,6 +62,7 @@ def spawn(proc_id: str, argv: list[str], cwd: str | None = None,
             stdout=slave_fd,
             stderr=slave_fd,
             cwd=workdir,
+            env=env,
             start_new_session=True,
         )
     finally:
