@@ -624,7 +624,7 @@ def term_winsize(fd: int) -> tuple[int, int]:
     """(rows, cols) of the terminal behind fd, with env fallback."""
     try:
         if fd >= 0:
-            cols, rows = struct.unpack(
+            rows, cols = struct.unpack(
                 "HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))[:2]
             if rows and cols:
                 return rows, cols

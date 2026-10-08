@@ -15,6 +15,19 @@ from textual.widgets import Button, DataTable, Footer, Header, Input, Log, Stati
 
 from .deckd import DeckClient, run_takeover, term_winsize
 
+# In-app guidance: terse but actionable, so the operator never has to guess
+# what the detail screen is (read-only) or how to get full-screen control.
+DASHBOARD_HELP = (
+    "enter=read-only logs   t=full-screen takeover (Ctrl-] returns)   "
+    "a=add   x=kill   d=detach (keeps processes)   "
+    "q=stop daemon (kills processes)"
+)
+DETAIL_HELP = (
+    "read-only follow (not full-screen)   t=full-screen takeover "
+    "(Ctrl-] returns)   b=back to dashboard (d/q act there)   "
+    "esc goes to the program"
+)
+
 
 class PromptScreen(ModalScreen):
     """Single-line text prompt; dismisses with the value or None on cancel."""
@@ -52,9 +65,9 @@ class ConfirmScreen(ModalScreen):
 
     CSS = """
     ConfirmScreen { align: center middle; }
-    #confirm-box { width: 60; height: auto; padding: 1 2;
+    #confirm-box { width: 60; max-width: 100%; height: auto; padding: 1 2;
                    border: round thick; background: $panel; }
-    #confirm-buttons { margin-top: 1; }
+    #confirm-buttons { height: auto; margin-top: 1; }
     """
 
     def __init__(self, question: str) -> None:
@@ -80,12 +93,13 @@ class DetailScreen(Screen):
 
     CSS = """
     DetailScreen { background: $background; }
+    #help-bar { height: auto; color: $text-muted; }
     Log { width: 1fr; height: 1fr; }
     """
 
     BINDINGS = [
         Binding("b", "leave", "back"),
-        Binding("t", "takeover", "takeover"),
+        Binding("t", "takeover", "full-screen"),
     ]
 
     def __init__(self, proc_id: str, proc_name: str) -> None:
@@ -94,6 +108,7 @@ class DetailScreen(Screen):
         self.proc_name = proc_name
 
     def compose(self) -> ComposeResult:
+        yield Static(DETAIL_HELP, id="help-bar")
         yield Log(id="detail-log", max_lines=10000, auto_scroll=True)
 
     def on_mount(self) -> None:
@@ -132,26 +147,33 @@ class DeckApp(App):
 
     CSS = """
     #proc-table { height: 1fr; }
+    #help-bar { height: auto; color: $text-muted; }
     """
 
     BINDINGS = [
         Binding("a", "add", "add"),
-        Binding("t", "takeover", "takeover"),
+        Binding("t", "takeover", "full-screen"),
         Binding("x", "kill", "kill"),
         Binding("d", "detach", "detach"),
         Binding("q", "stop_daemon", "stop daemon"),
     ]
 
-    def __init__(self, client: DeckClient, socket_path: Path) -> None:
+    def __init__(self, client: DeckClient, socket_path: Path,
+                 select_id: str | None = None) -> None:
         super().__init__()
         self.client = client
         self.socket_path = socket_path
         self.current_detail: DetailScreen | None = None
         self._outbox: asyncio.Queue = asyncio.Queue()
+        # row the wrapper asked to select once (cli-deck <command>); cleared
+        # after the first snapshot that contains it, so later updates never
+        # move the user's cursor
+        self._select_id = select_id
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
         yield DataTable(id="proc-table", cursor_type="row")
+        yield Static(DASHBOARD_HELP, id="help-bar")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -225,6 +247,18 @@ class DeckApp(App):
                 table.update_cell_at((row_index, col), value)
         for proc_id, cells in wanted.items():
             table.add_row(*cells, key=proc_id)
+        self._apply_pending_selection(table)
+
+    def _apply_pending_selection(self, table: DataTable) -> None:
+        """Move the cursor to the wrapper's new process once; after that the
+        user's cursor choice survives every snapshot update."""
+        if self._select_id is None:
+            return
+        for row_key in table.rows:
+            if row_key.value == self._select_id:
+                table.move_cursor(row=table.get_row_index(row_key))
+                self._select_id = None
+                return
 
     @staticmethod
     def _row_cells(p: dict) -> tuple[str, ...]:

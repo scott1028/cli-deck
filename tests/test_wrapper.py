@@ -1,10 +1,13 @@
 """M2: the `cli-deck <command...>` wrapper prefix, --no-launch and env overlay."""
 import asyncio
+import fcntl
 import os
 import pty
 import select
+import struct
 import subprocess
 import sys
+import termios
 import time
 import unittest
 from pathlib import Path
@@ -56,13 +59,14 @@ class WrapperPrefixTest(unittest.TestCase):
         self.assertEqual(_split_wrapper(["--resume", "--", "-l"]),
                          (["--resume"], ["-l"]))
 
-    def test_prefix_registers_and_attaches(self):
+    def test_prefix_registers_and_opens_dashboard(self):
         name = "m2-attach"
         sock, _ = deck_paths(name)
         try:
-            rc, out = self._run_attached(name, ["echo", MARK])
+            rc, out = self._run_on_pty(name, ["echo", MARK])
             self.assertEqual(rc, 0)
-            self.assertIn(MARK.encode(), out)  # child output reached the terminal
+            self.assertIn(b"started", out)    # dashboard table header, not a takeover
+            self.assertIn(b"read-only", out)  # in-app guidance
             procs = asyncio.run(_deck_processes(sock))
             self.assertEqual([p["name"] for p in procs], [f"echo {MARK}"])
             self.assertEqual(procs[0]["state"], "exited")
@@ -73,9 +77,9 @@ class WrapperPrefixTest(unittest.TestCase):
         name = "m2-survive"
         sock, _ = deck_paths(name)
         try:
-            rc, out = self._run_attached(name, ["sleep", "300"], read_seconds=2.0)
+            rc, out = self._run_on_pty(name, ["sleep", "300"], read_seconds=2.0)
             self.assertEqual(rc, 0)
-            self.assertIn(b"detached", out)
+            self.assertIn(b"started", out)  # dashboard opened, `d` closed it
             procs = asyncio.run(_deck_processes(sock))
             self.assertEqual([p["name"] for p in procs], ["sleep 300"])
             self.assertEqual(procs[0]["state"], "running")
@@ -122,11 +126,12 @@ class WrapperPrefixTest(unittest.TestCase):
 
     # -- helpers ------------------------------------------------------------
 
-    def _run_attached(self, name: str, args: list[str],
-                      env_extra: dict | None = None,
-                      read_seconds: float = 3.0) -> tuple[int, bytes]:
-        """Run the wrapper with stdio on a pty, then detach with Ctrl-]."""
+    def _run_on_pty(self, name: str, args: list[str],
+                    env_extra: dict | None = None,
+                    read_seconds: float = 3.0) -> tuple[int, bytes]:
+        """Run the wrapper with stdio on a pty, then leave the dashboard with `d`."""
         master, slave = pty.openpty()
+        fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
         proc = subprocess.Popen(
             [sys.executable, "-m", "cli_deck", *args],
             env=self._env(name, env_extra),
@@ -140,13 +145,13 @@ class WrapperPrefixTest(unittest.TestCase):
                 ready, _, _ = select.select([master], [], [], 0.2)
                 if ready:
                     out += os.read(master, 65536)
-            os.write(master, b"\x1d")  # Ctrl-]
+            os.write(master, b"d")  # detach: close the TUI, daemon keeps running
             try:
                 rc = proc.wait(timeout=15)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
-                self.fail("wrapper did not exit after Ctrl-]")
+                self.fail("wrapper did not exit after `d`")
             while True:
                 ready, _, _ = select.select([master], [], [], 0.2)
                 if not ready:
@@ -171,7 +176,8 @@ class WrapperPrefixTest(unittest.TestCase):
         return proc.returncode, proc.stdout
 
     def _env(self, name: str, env_extra: dict | None) -> dict[str, str]:
-        return {**os.environ, "CLI_DECK_NAME": name, **(env_extra or {})}
+        return {**os.environ, "CLI_DECK_NAME": name,
+                "TERM": "xterm-256color", **(env_extra or {})}
 
     @staticmethod
     def _recipe_id(stdout: str) -> str:

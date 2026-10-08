@@ -33,7 +33,7 @@ gone are swept (see Teardown). Deck name comes from `CLI_DECK_NAME` (default `de
 ## Running a command under the deck
 
 ```sh
-cli-deck vim notes.md      # like tmux new -A: run it, use it, Ctrl-] to detach
+cli-deck vim notes.md      # starts it, then opens the dashboard with it selected
 cli-deck ssh prod          # the process outlives the wrapper and this shell
 cli-deck --no-launch make watch   # register only; print the attach recipe
 ```
@@ -43,12 +43,17 @@ joined into one string and run as `bash -ic <string>`, so `~/.bashrc` aliases,
 functions and PATH apply. Every cli-deck option is a flag, so parsing stays
 unambiguous; a command that must **start** with a flag is disambiguated with
 `--`: `cli-deck -- -L 80:localhost:80`. `--resume`, `-l`, `--version`,
-`--no-launch` and the hidden `--daemon` are unchanged. After `Ctrl-]` the wrapper
-prints the id and exits; the process keeps running and shows up in `-l` and in
-the TUI. Re-attach with `cli-deck --resume` (select the row, press `t`) — the
-takeover replays the ring buffer first, so you see what happened while away.
+`--no-launch` and the hidden `--daemon` are unchanged. The wrapper then opens
+the dashboard with the new process selected (older processes keep their rows);
+it does **not** attach directly. Press `t` for full-screen takeover — `Ctrl-]`
+returns to the dashboard — or `d` to close the dashboard; either way the
+process keeps running and shows up in `-l` and in the TUI. Re-attach later
+with `cli-deck --resume` (select the row, press `t`) — the takeover replays
+the ring buffer first, so you see what happened while away. `cli-deck
+<command>` and `--resume` open this same dashboard, so every takeover goes
+through the Textual suspend/pump path described below.
 
-`--no-launch` prints the recipe instead of attaching:
+`--no-launch` prints the recipe instead of opening the dashboard:
 
 ```text
 deck:    default
@@ -57,7 +62,7 @@ id:      4890c5d1
 command: make watch
 cwd:     /home/scott/project
 log:     /tmp/cli-deck-1000/f0011108146a.logs/4890c5d1.log
-attach:  cli-deck --resume   (select the row, press t; Ctrl-] detaches)
+attach:  cli-deck --resume   (select the row, press t; Ctrl-] returns to the dashboard)
 ```
 
 ### Caller environment
@@ -100,13 +105,16 @@ function until it restarts (`unset -f cli-deck` clears it).
 | `b` | leave the detail screen (back to the list) |
 | `esc` | **not a navigation key**: forwarded to the process's pty, so vim and friends still get it |
 
+The dashboard help bar lists the keys above; the detail screen's help bar
+covers its own keys (read-only follow, `t` takeover with `Ctrl-]` return,
+`b` back, `esc` to the program), so the guidance is visible inside the app.
+
 Takeover suspends the Textual app (`App.suspend()`), puts the operator terminal
 in raw mode, and pumps bytes both ways between the terminal and the daemon's
 master fd over its own daemon connection — vim, ssh, claude, codex render
 natively. The detach key is `Ctrl-]` (`TAKEOVER_DETACH_KEY`); every other byte,
 ESC included, goes to the child. The pty is resized to the operator terminal on
-takeover, on attach, and whenever the terminal is resized. The wrapper's attach
-uses the same pump, without Textual.
+takeover, on attach, and whenever the terminal is resized.
 
 ## Teardown
 

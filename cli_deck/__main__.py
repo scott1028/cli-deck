@@ -10,8 +10,8 @@ import time
 from . import __version__
 from .app import DeckApp
 from .deckd import (DeckClient, deck_name, deck_paths, ensure_daemon,
-                    format_age, list_decks, run_daemon, run_takeover,
-                    socket_alive, sweep_stale_decks)
+                    format_age, list_decks, run_daemon, socket_alive,
+                    sweep_stale_decks)
 
 # Every cli-deck option is a flag (no option takes a value), which is what makes
 # the `cli-deck <command...>` prefix form unambiguous.
@@ -38,16 +38,17 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="cli-deck",
         description="Control center for interactive CLI processes.",
         epilog="`cli-deck <command...>` runs the command under the deck and "
-               "attaches\n(Ctrl-] detaches, the process keeps running). Use `--` "
-               "when the command\nstarts with a flag, e.g. `cli-deck -- -L 8080:x`.",
+               "opens the\ndashboard with it selected (press t for full-screen, "
+               "Ctrl-]\nreturns). Use `--` when the command starts with a flag, "
+               "e.g.\n`cli-deck -- -L 8080:x`.",
     )
     parser.add_argument("--resume", action="store_true",
                         help="attach to an already running deck")
     parser.add_argument("-l", "--list", action="store_true",
                         help="list live decks (name, socket, pid, age) and exit")
     parser.add_argument("--no-launch", action="store_true",
-                        help="with a command: register it but do not attach; "
-                             "print the attach recipe instead")
+                        help="with a command: register it and print the attach "
+                             "recipe instead of opening the dashboard")
     parser.add_argument("--version", action="version",
                         version=f"cli-deck {__version__}")
     parser.add_argument("--daemon", action="store_true", help=argparse.SUPPRESS)
@@ -124,11 +125,12 @@ def _env_overlay() -> dict[str, str]:
 
 
 async def _run_wrapper(command: list[str], no_launch: bool) -> int:
-    """`cli-deck <command...>`: run it under the deck, then attach.
+    """`cli-deck <command...>`: run it under the deck, then open the dashboard.
 
-    Feels like tmux `new -A`: the command starts (or reuses) the deck, the
-    operator terminal is handed to it, Ctrl-] detaches, and the process keeps
-    running after this wrapper exits.
+    The command starts (or reuses) the deck and the dashboard opens with the
+    new process selected; `t` hands the terminal to it full-screen (Ctrl-]
+    returns to the dashboard), `d` closes the dashboard, and the process
+    keeps running after this wrapper exits.
     """
     command_str = " ".join(command)
     socket_path, meta_path = deck_paths()
@@ -142,11 +144,11 @@ async def _run_wrapper(command: list[str], no_launch: bool) -> int:
     if no_launch:
         _print_recipe(command_str, proc_id, added, socket_path)
         return 0
-    print(f"cli-deck: attached to '{command_str}' (id {proc_id}); "
-          f"Ctrl-] detaches and the process keeps running", file=sys.stderr)
-    run_takeover(socket_path, proc_id, sys.stdin.fileno(), sys.stdout.fileno())
-    print(f"cli-deck: detached (id {proc_id}); "
-          f"re-attach with `cli-deck --resume`", file=sys.stderr)
+    client = await DeckClient.connect(socket_path)
+    try:
+        await DeckApp(client, socket_path, select_id=proc_id).run_async()
+    finally:
+        await client.close()
     return 0
 
 
@@ -174,7 +176,8 @@ def _print_recipe(command_str: str, proc_id: str, added: dict,
     print(f"command: {command_str}")
     print(f"cwd:     {added.get('cwd', '')}")
     print(f"log:     {added.get('log_path', '')}")
-    print("attach:  cli-deck --resume   (select the row, press t; Ctrl-] detaches)")
+    print("attach:  cli-deck --resume   (select the row, press t; "
+          "Ctrl-] returns to the dashboard)")
 
 
 if __name__ == "__main__":
