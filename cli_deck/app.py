@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 
+from rich.text import Text
 from textual import events
 from textual.app import App, Binding, ComposeResult, SuspendNotSupported
 from textual.containers import Horizontal, Vertical
@@ -17,15 +18,16 @@ from .deckd import DeckClient, run_takeover, term_winsize
 
 # In-app guidance: terse but actionable, so the operator never has to guess
 # what the detail screen is (read-only) or how to get full-screen control.
+# The dashboard bar separates the two view modes from the other actions; the
+# detail bar states the mode and how to reach/leave the interactive terminal.
 DASHBOARD_HELP = (
-    "enter=read-only logs   t=full-screen takeover (Ctrl-] returns)   "
-    "a=add   x=kill   d=detach (keeps processes)   "
-    "q=stop daemon (kills processes)"
+    "VIEW  enter=read-only logs (keys NOT sent)   "
+    "t=INTERACTIVE terminal, full-screen (Ctrl-] returns here)\n"
+    "ACTIONS  a add  x kill  r remove  d detach (keeps)  q stop daemon (kills)"
 )
-DETAIL_HELP = (
-    "read-only follow (not full-screen)   t=full-screen takeover "
-    "(Ctrl-] returns)   b=back to dashboard (d/q act there)   "
-    "esc goes to the program"
+DETAIL_BAR = (
+    "READ-ONLY: keys NOT sent to the process (esc reaches it)   "
+    "t=interactive full-screen (Ctrl-] returns)   b=dashboard"
 )
 
 
@@ -61,25 +63,45 @@ class PromptScreen(ModalScreen):
 
 
 class ConfirmScreen(ModalScreen):
-    """Yes/no confirmation; dismisses with True/False."""
+    """Yes/no confirmation; dismisses with True/False. With default_no set
+    (live removal) No holds focus on open, so Enter cancels."""
 
     CSS = """
     ConfirmScreen { align: center middle; }
-    #confirm-box { width: 60; max-width: 100%; height: auto; padding: 1 2;
+    #confirm-box { width: auto; max-width: 100%; height: auto; padding: 1 2;
                    border: round thick; background: $panel; }
-    #confirm-buttons { height: auto; margin-top: 1; }
+    #confirm-question { width: auto; max-width: 100%; }
+    #confirm-buttons { width: auto; min-width: 100%; height: auto;
+                       margin-top: 1; align-horizontal: center; }
     """
+    # the question's max-width: 100% keeps long text wrapping inside the box
+    # content area instead of keeping an intrinsic width that overflows the
+    # viewport-capped box; the button row keeps its intrinsic width (so the
+    # group always contributes to the box's auto size) but never renders
+    # narrower than the content area, and centers Stop+Cancel / Yes+No as
+    # one group inside it
 
-    def __init__(self, question: str) -> None:
+    def __init__(self, question: str, yes_label: str = "Stop",
+                 no_label: str = "Cancel", default_no: bool = False) -> None:
         super().__init__()
         self.question = question
+        self.yes_label = yes_label
+        self.no_label = no_label
+        # live removal focuses No so Enter cancels; quit keeps its original
+        # default (Stop holds focus via auto-focus)
+        self.default_no = default_no
 
     def compose(self) -> ComposeResult:
         with Vertical(id="confirm-box"):
-            yield Static(self.question)
+            # markup=False: process names in the question render as plain text
+            yield Static(self.question, id="confirm-question", markup=False)
             with Horizontal(id="confirm-buttons"):
-                yield Button("Stop", variant="error", id="yes")
-                yield Button("Cancel", variant="primary", id="no")
+                yield Button(self.yes_label, variant="error", id="yes")
+                yield Button(self.no_label, variant="primary", id="no")
+
+    def on_mount(self) -> None:
+        if self.default_no:
+            self.query_one("#no", Button).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "yes")
@@ -93,8 +115,10 @@ class DetailScreen(Screen):
 
     CSS = """
     DetailScreen { background: $background; }
-    #help-bar { height: auto; color: $text-muted; }
     Log { width: 1fr; height: 1fr; }
+    #detail-proc { height: 2; padding: 0 1; background: $panel;
+                   color: $text; border-top: thick $primary; }
+    #detail-bar { height: auto; padding: 0 1; background: $panel; color: $text; }
     """
 
     BINDINGS = [
@@ -108,8 +132,11 @@ class DetailScreen(Screen):
         self.proc_name = proc_name
 
     def compose(self) -> ComposeResult:
-        yield Static(DETAIL_HELP, id="help-bar")
         yield Log(id="detail-log", max_lines=10000, auto_scroll=True)
+        # persistent bottom info/action area, below the log; the process name
+        # is plain text (markup=False) so bracket-containing names render as-is
+        yield Static(f"process: {self.proc_name}", id="detail-proc", markup=False)
+        yield Static(DETAIL_BAR, id="detail-bar")
 
     def on_mount(self) -> None:
         self.app.current_detail = self
@@ -147,13 +174,15 @@ class DeckApp(App):
 
     CSS = """
     #proc-table { height: 1fr; }
-    #help-bar { height: auto; color: $text-muted; }
+    #help-bar { height: auto; padding: 0 1; background: $panel;
+                color: $text; border-top: thick $primary; }
     """
 
     BINDINGS = [
         Binding("a", "add", "add"),
         Binding("t", "takeover", "full-screen"),
         Binding("x", "kill", "kill"),
+        Binding("r", "remove", "remove"),
         Binding("d", "detach", "detach"),
         Binding("q", "stop_daemon", "stop daemon"),
     ]
@@ -320,6 +349,39 @@ class DeckApp(App):
             self.notify("no process selected")
             return
         self.client_send({"cmd": "kill", "id": str(row[0])})
+
+    def action_remove(self) -> None:
+        """Dashboard-only: never remove a hidden row behind detail/modals."""
+        if self.current_detail is not None or isinstance(self.screen,
+                                                         ModalScreen):
+            return
+        row = self._selected_row()
+        if row is None:
+            self.notify("no process selected")
+            return
+        proc_id, name, state = str(row[0]), str(row[1]), str(row[2])
+        if state == "exited":
+            self.client_send({"cmd": "remove", "id": proc_id,
+                              "terminate_first": False})
+            return
+        # capture the id now: cursor moves or snapshot churn while the
+        # confirm is open cannot retarget Yes to another process
+        def done(confirmed: bool) -> None:
+            if confirmed:
+                self.client_send({"cmd": "remove", "id": proc_id,
+                                  "terminate_first": True})
+
+        # shorten only the display name so the termination consequence and
+        # both buttons always stay visible on narrow screens; budget by
+        # terminal display cells, not codepoints (CJK is double-width)
+        name_text = Text(name)
+        name_text.truncate(60, overflow="ellipsis")
+        display_name = name_text.plain
+        self.push_screen(
+            ConfirmScreen(f"Remove '{display_name}'? Yes terminates it first.",
+                          yes_label="Yes", no_label="No", default_no=True),
+            done,
+        )
 
     def action_detach(self) -> None:
         self.exit()  # daemon keeps running

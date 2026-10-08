@@ -29,7 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import pty_host
-from .registry import Registry, STATE_EXITED, STATE_STOPPING
+from .registry import Registry, STATE_EXITED, STATE_RUNNING, STATE_STOPPING
 
 SOCKET_CONNECT_TIMEOUT = 5.0
 TAKEOVER_DETACH_KEY = b"\x1d"  # Ctrl-]
@@ -273,6 +273,9 @@ class DeckDaemon:
         # In-flight kill futures: held so they are not garbage collected while
         # running; teardown re-kills whatever is still alive, it does not join.
         self._kill_tasks: set[asyncio.Future] = set()
+        # ids whose removal the daemon must finish once the current kill ends
+        # (daemon-owned: survives the requesting client detaching)
+        self._remove_after_exit: set[str] = set()
         self._server: asyncio.Server | None = None
         self._stopping = asyncio.Event()
         # Our own pool: the loop's default executor is joined by asyncio.run()
@@ -414,6 +417,7 @@ class DeckDaemon:
         handlers = {
             "add": self._cmd_add,
             "kill": self._cmd_kill,
+            "remove": self._cmd_remove,
             "list": self._cmd_list,
             "attach": self._cmd_attach,
             "attach_input": self._cmd_attach_input,
@@ -467,11 +471,17 @@ class DeckDaemon:
 
     async def _cmd_kill(self, conn: _ClientConn, msg: dict) -> None:
         proc_id = msg.get("id")
+        if self.handles.get(proc_id) is None or self.registry.get(proc_id) is None:
+            await conn.send({"msg": "error",
+                             "message": f"no such process: {proc_id!r}"})
+            return
+        self._begin_kill(proc_id)
+
+    def _begin_kill(self, proc_id: str) -> None:
+        """Existing SIGINT -> SIGTERM -> SIGKILL escalation for a live handle."""
         handle = self.handles.get(proc_id)
         record = self.registry.get(proc_id)
         if handle is None or record is None:
-            await conn.send({"msg": "error",
-                             "message": f"no such process: {proc_id!r}"})
             return
         record.state = STATE_STOPPING
         self._broadcast_snapshot()
@@ -480,6 +490,34 @@ class DeckDaemon:
                                                        pty_host.kill, handle))
         self._kill_tasks.add(task)
         task.add_done_callback(self._kill_tasks.discard)
+
+    async def _cmd_remove(self, conn: _ClientConn, msg: dict) -> None:
+        """Drop the registry entry: exited directly; live only with explicit
+        terminate-first intent, reusing the kill escalation and removing once
+        the child exits (plain remove never touches a live process)."""
+        proc_id = msg.get("id")
+        record = self.registry.get(proc_id)
+        if record is None:
+            await conn.send({"msg": "error",
+                             "message": f"no such process: {proc_id!r}"})
+            return
+        if record.state == STATE_EXITED:
+            self._remove_after_exit.discard(proc_id)
+            self.registry.remove(proc_id)
+            self._broadcast_snapshot()
+            return
+        if msg.get("terminate_first") is not True:
+            # only the literal JSON boolean true authorizes terminating a
+            # live item: truthy strings/integers/null are rejected
+            await conn.send({"msg": "error",
+                             "message": f"cannot plain-remove {record.state} "
+                                        f"process {proc_id!r}: terminate-first "
+                                        "required"})
+            return
+        self._remove_after_exit.add(proc_id)
+        if record.state == STATE_RUNNING:
+            self._begin_kill(proc_id)
+        # stopping: the kill already in flight will finish the removal
 
     async def _cmd_list(self, conn: _ClientConn, msg: dict) -> None:
         await conn.send(snapshot_msg(self.registry))
@@ -557,6 +595,11 @@ class DeckDaemon:
         fh = self.log_files.pop(proc_id, None)
         if fh is not None:
             fh.close()
+        if proc_id in self._remove_after_exit:
+            # terminate-first remove: exited now, so drop the entry (the raw
+            # log file on disk stays) and let every client see it
+            self._remove_after_exit.discard(proc_id)
+            self.registry.remove(proc_id)
         self._broadcast_snapshot()
 
     def _broadcast_snapshot(self) -> None:

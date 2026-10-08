@@ -96,18 +96,24 @@ function until it restarts (`unset -f cli-deck` clears it).
 | key | action |
 |---|---|
 | `a` | add a process (prompt: empty = plain `bash -i`, otherwise `bash -ic <cmd>` so aliases/functions/PATH apply) |
-| `enter` | detail screen: **read-only** live follow + scrollback |
+| `enter` | detail screen: **read-only** live follow + scrollback (keys are NOT sent to the process) |
 | `t` | **full-screen takeover** of the selected process's pty (from list or detail screen) |
 | `Ctrl-]` | **(takeover) detach** and return to the TUI; the process keeps running |
 | `x` | kill (escalates SIGINT -> SIGTERM -> SIGKILL on the process group) |
+| `r` | remove the selected entry from the daemon's registry: `exited` rows are removed directly; live rows ask first (default **No** — Enter/Escape cancel; Yes terminates, waits for exit, then removes). The raw log file is kept |
 | `d` | detach: close the TUI, daemon keeps running |
 | `q` | stop daemon (asks for confirmation first, kills its processes) |
 | `b` | leave the detail screen (back to the list) |
 | `esc` | **not a navigation key**: forwarded to the process's pty, so vim and friends still get it |
 
-The dashboard help bar lists the keys above; the detail screen's help bar
-covers its own keys (read-only follow, `t` takeover with `Ctrl-]` return,
-`b` back, `esc` to the program), so the guidance is visible inside the app.
+Both screens carry a persistent bottom bar, below the table/log and visually
+separated from them. The dashboard bar splits the two view modes — `enter` =
+read-only logs (keys not sent) vs `t` = interactive full-screen terminal
+(`Ctrl-]` returns here) — from the other actions (`a`, `x`, `r` remove, `d`
+keeps processes, `q` kills them). The detail screen's bar names the process (plain
+text, clipped to one line), states READ-ONLY / keys-not-sent, and carries `t` interactive
+(`Ctrl-]` returns), `b` back to the dashboard, and the `esc` exception, so the
+guidance is visible inside the app.
 
 Takeover suspends the Textual app (`App.suspend()`), puts the operator terminal
 in raw mode, and pumps bytes both ways between the terminal and the daemon's
@@ -154,6 +160,7 @@ Client -> daemon:
 ```json
 {"cmd": "add", "command": "...", "argv": [...], "name": "...", "cwd": "...", "env": {...}}
 {"cmd": "kill", "id": "..."}
+{"cmd": "remove", "id": "...", "terminate_first": true}   // false only for exited records
 {"cmd": "list"}
 {"cmd": "attach", "id": "..."}            // id null = unsubscribe
 {"cmd": "attach_input", "id": "...", "data": "<base64>"}
@@ -172,7 +179,11 @@ Daemon -> client:
 {"msg": "error", "message": "..."}
 ```
 
-A fresh connection always receives a `snapshot` immediately. Takeover opens a
+A fresh connection always receives a `snapshot` immediately. `remove` with
+`terminate_first: false` only drops `exited` records; live records require
+`terminate_first: true`, and the daemon then reuses the kill escalation and
+removes the entry once the child exits — even if the requesting client
+detaches first (raw log files are never deleted). Takeover opens a
 second connection and only uses `attach` / `attach_input` / `winsize`. Clients
 must drain unread messages before closing (`DeckClient.close()` does): closing
 with data still in the receive queue makes the kernel send RST, which drops
