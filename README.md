@@ -23,6 +23,7 @@ make uninstall # reverses install; refuses while a daemon runs (FORCE=1 override
 ```sh
 cli-deck            # start (spawns the daemon if needed) and open the TUI
 cli-deck --resume   # re-attach to a running deck (no spawn)
+cli-deck -r         # same as --resume
 cli-deck -l         # list live decks: name, socket, pid, age
 ```
 

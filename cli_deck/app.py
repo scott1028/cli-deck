@@ -64,7 +64,7 @@ class PromptScreen(ModalScreen):
 
 class ConfirmScreen(ModalScreen):
     """Yes/no confirmation; dismisses with True/False. With default_no set
-    (live removal) No holds focus on open, so Enter cancels."""
+    (live removal, quit) No holds focus on open, so Enter cancels."""
 
     CSS = """
     ConfirmScreen { align: center middle; }
@@ -87,8 +87,7 @@ class ConfirmScreen(ModalScreen):
         self.question = question
         self.yes_label = yes_label
         self.no_label = no_label
-        # live removal focuses No so Enter cancels; quit keeps its original
-        # default (Stop holds focus via auto-focus)
+        # live removal and quit focus No so Enter cancels
         self.default_no = default_no
 
     def compose(self) -> ComposeResult:
@@ -348,7 +347,24 @@ class DeckApp(App):
         if row is None:
             self.notify("no process selected")
             return
-        self.client_send({"cmd": "kill", "id": str(row[0])})
+        proc_id, name, state = str(row[0]), str(row[1]), str(row[2])
+        if state != "running":
+            self.client_send({"cmd": "kill", "id": proc_id})
+            return
+        # capture the id now: cursor moves or snapshot churn while the
+        # confirm is open cannot retarget Yes to another process
+        def done(confirmed: bool) -> None:
+            if confirmed:
+                self.client_send({"cmd": "kill", "id": proc_id})
+
+        # same display-cell shortening as remove keeps both buttons visible
+        name_text = Text(name)
+        name_text.truncate(60, overflow="ellipsis")
+        self.push_screen(
+            ConfirmScreen(f"Kill '{name_text.plain}'?",
+                          yes_label="Yes", no_label="No", default_no=True),
+            done,
+        )
 
     def action_remove(self) -> None:
         """Dashboard-only: never remove a hidden row behind detail/modals."""
@@ -392,7 +408,8 @@ class DeckApp(App):
                 self.run_worker(self._stop_and_exit())
 
         self.push_screen(
-            ConfirmScreen("Stop the daemon and kill all its processes?"), done)
+            ConfirmScreen("Stop the daemon and kill all its processes?",
+                          default_no=True), done)
 
     async def _stop_and_exit(self) -> None:
         try:

@@ -15,7 +15,7 @@ from .deckd import (DeckClient, deck_name, deck_paths, ensure_daemon,
 
 # Every cli-deck option is a flag (no option takes a value), which is what makes
 # the `cli-deck <command...>` prefix form unambiguous.
-OPTIONS = frozenset({"--resume", "-l", "--list", "--version", "--no-launch",
+OPTIONS = frozenset({"-r", "--resume", "-l", "--list", "--version", "--no-launch",
                      "--daemon", "-h", "--help"})
 
 
@@ -42,7 +42,7 @@ def _build_parser() -> argparse.ArgumentParser:
                "Ctrl-]\nreturns). Use `--` when the command starts with a flag, "
                "e.g.\n`cli-deck -- -L 8080:x`.",
     )
-    parser.add_argument("--resume", action="store_true",
+    parser.add_argument("-r", "--resume", action="store_true",
                         help="attach to an already running deck")
     parser.add_argument("-l", "--list", action="store_true",
                         help="list live decks (name, socket, pid, age) and exit")

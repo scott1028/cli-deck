@@ -5,7 +5,7 @@ from pathlib import Path
 
 from textual.widgets import DataTable
 
-from cli_deck.app import DeckApp, DetailScreen, PromptScreen
+from cli_deck.app import ConfirmScreen, DeckApp, DetailScreen, PromptScreen
 
 PROC1 = {"id": "abc123", "name": "bash -i", "argv": ["bash", "-i"], "cwd": "/tmp",
          "state": "running", "exit_code": None, "started_at": 1759000000.0,
@@ -84,8 +84,11 @@ class AppSmokeTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIsInstance(app.screen, DetailScreen)
             self.assertIn({"cmd": "attach", "id": None}, client.sent)
 
-            # x=kill sends the kill command for the selected row
+            # x=kill asks first (default No); explicit Yes sends the kill
             await pilot.press("x")
+            await pilot.pause()
+            self.assertIsInstance(app.screen, ConfirmScreen)
+            await pilot.press("shift+tab", "enter")
             await pilot.pause()
             self.assertIn({"cmd": "kill", "id": "abc123"}, client.sent)
 
