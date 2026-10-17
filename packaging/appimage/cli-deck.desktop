@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=cli-deck
+Comment=Control center for interactive CLI processes
+Exec=cli-deck
+Icon=cli-deck
+Terminal=true
+Categories=Development;
