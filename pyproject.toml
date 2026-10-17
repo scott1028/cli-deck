@@ -1,5 +1,6 @@
 [project]
 name = "cli-deck"
+# versioning restarts at 0.1.0: history is a single squashed commit
 version = "0.1.0"
 description = "Control center for interactive CLI processes"
 readme = "README.md"
