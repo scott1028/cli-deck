@@ -1,0 +1,14 @@
+[project]
+name = "cli-deck"
+version = "0.1.0"
+description = "Control center for interactive CLI processes"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["textual>=8.2,<9"]
+
+[project.scripts]
+cli-deck = "cli_deck.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
