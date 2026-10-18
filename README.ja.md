@@ -48,7 +48,7 @@ FUSE がない環境では、コマンドの前に `APPIMAGE_EXTRACT_AND_RUN=1` 
 ### macOS（tarball）
 
 [Releases](https://github.com/scott1028/cli-deck/releases) から tarball をダウンロード：
-Apple Silicon は `macos-aarch64`、Intel は `macos-x86_64`。Python 同梱、uv 不要。
+Apple Silicon 専用の `macos-aarch64`。Python 同梱、uv 不要。
 好きな場所に展開し、ランチャーを PATH に置きます：
 
 ```sh
@@ -58,6 +58,10 @@ ln -sf ~/.local/share/cli-deck/bin/cli-deck ~/.local/bin/cli-deck
 
 macOS が初回実行をブロックしたら、ダウンロードフラグを解除：
 `xattr -dr com.apple.quarantine ~/.local/share/cli-deck`。
+
+### Windows（WSL）
+
+ネイティブの Windows 版はありません。WSL の中で Linux と同じ方法（ソースから、または AppImage）でインストールしてください。
 
 ## 1行でスタート
 

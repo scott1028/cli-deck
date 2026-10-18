@@ -49,7 +49,7 @@ Without FUSE, prefix commands with `APPIMAGE_EXTRACT_AND_RUN=1`.
 ### macOS (tarball)
 
 Download a tarball from [Releases](https://github.com/scott1028/cli-deck/releases):
-`macos-aarch64` for Apple Silicon, or `macos-x86_64` for Intel. It includes Python;
+`macos-aarch64`, for Apple Silicon only. It includes Python;
 uv is not needed. Extract it wherever you like and put the launcher on PATH:
 
 ```sh
@@ -59,6 +59,11 @@ ln -sf ~/.local/share/cli-deck/bin/cli-deck ~/.local/bin/cli-deck
 
 If macOS blocks the first run, clear the download flag:
 `xattr -dr com.apple.quarantine ~/.local/share/cli-deck`.
+
+### Windows (WSL)
+
+There is no native Windows build. Inside WSL, install it the Linux way: from
+source or the AppImage.
 
 ## Start in one line
 

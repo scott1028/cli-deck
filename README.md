@@ -48,7 +48,7 @@ install -Dm755 cli-deck.AppImage ~/.local/bin/cli-deck
 ### macOS（tarball）
 
 到 [Releases](https://github.com/scott1028/cli-deck/releases) 下載 tarball：
-Apple Silicon 拿 `macos-aarch64`，Intel 拿 `macos-x86_64`。一樣內含 Python。
+只有 Apple Silicon 版（`macos-aarch64`），一樣內含 Python。
 解壓到喜歡的位置，把啟動器塞進 PATH：
 
 ```sh
@@ -58,6 +58,10 @@ ln -sf ~/.local/share/cli-deck/bin/cli-deck ~/.local/bin/cli-deck
 
 第一次跑被 macOS 擋下來，把下載標記清掉就好：
 `xattr -dr com.apple.quarantine ~/.local/share/cli-deck`。
+
+### Windows（WSL）
+
+沒有原生 Windows 版。在 WSL 裡照 Linux 的方式裝就好：從原始碼或 AppImage。
 
 ## 一行就能開始
 
