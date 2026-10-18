@@ -241,8 +241,17 @@ async def ensure_daemon(socket_path: Path, meta_path: Path) -> dict:
         socket_path.unlink()
     except FileNotFoundError:
         pass
+    # In our AppImage, python-appimage points sys.executable at the AppImage,
+    # whose AppRun already adds `-m cli_deck`. Re-entering it also gives the
+    # daemon its own mount; the TUI's mount goes away when the TUI exits.
+    appimage = os.environ.get("APPIMAGE")
+    appdir = os.environ.get("APPDIR")
+    if appimage and appdir and Path(sys.prefix).is_relative_to(appdir):
+        cmd = [appimage, "--daemon"]
+    else:
+        cmd = [sys.executable, "-m", "cli_deck", "--daemon"]
     subprocess.Popen(
-        [sys.executable, "-m", "cli_deck", "--daemon"],
+        cmd,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

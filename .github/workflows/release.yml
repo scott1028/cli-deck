@@ -110,7 +110,13 @@ jobs:
         env:
           # The runner may have no FUSE.
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: ./"$APPIMAGE" --help
+          CLI_DECK_NAME: smoke
+        run: |
+          ./"$APPIMAGE" --help
+          # Starts the deck daemon the way the TUI does; it must outlive the wrapper.
+          ./"$APPIMAGE" --no-launch true
+          ./"$APPIMAGE" --list
+          pkill -f "cli_de[c]k --daemon"
       - uses: actions/upload-artifact@v7
         with:
           name: appimage-${{ matrix.runner }}
