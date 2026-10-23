@@ -1,6 +1,6 @@
 [project]
 name = "cli-deck"
-version = "0.1.0"
+version = "0.1.1"
 description = "Control center for interactive CLI processes"
 readme = "README.md"
 requires-python = ">=3.10"
