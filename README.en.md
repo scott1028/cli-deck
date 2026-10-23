@@ -17,8 +17,8 @@ The full-screen dashboard is just a remote control you can put down any time.
 | **Your shell stays your shell** | Commands run through `bash -ic`, so your aliases, functions and PATH apply. | `cli-deck vim notes.md` |
 | **See what happened while away** | The last ~200 KB of screen output replays when you re-attach. | press `t` |
 | **Watch without touching** | `enter` opens a read-only live view with scrollback; keys never reach the program. | press `enter` |
-| **Auto-restart (protection)** | `p` marks a row; if the program dies on its own, the helper restarts it. | press `p` |
-| **Logs kept, capped** | Every process gets a raw log file; growth is capped so it never fills your disk. | `--no-launch` prints the log path |
+| **Auto-restart (protection)** | `p` marks a row; if the program dies on its own, the helper restarts it. | press `p`, or `cli-deck -p <cmd>` |
+| **Logs kept, capped** | Every process gets a raw log file; growth is capped so it never fills your disk. | `cli-deck -d <cmd>` prints the log path |
 
 ## Install
 
@@ -75,7 +75,7 @@ Close the terminal whenever you like — vim keeps running. Later:
 
 ```sh
 cli-deck --resume        # re-attach to a running deck (or: cli-deck -r)
-cli-deck -l              # list live decks: name, socket, pid, age
+cli-deck -l              # list live decks (name, socket, pid, age) and their processes
 ```
 
 Pick the vim row and press `t` to take over the screen. `Ctrl-]` drops you back
@@ -88,13 +88,23 @@ to the dashboard. The program never stops in between.
 | `cli-deck` | open the dashboard (starts the helper if needed) |
 | `cli-deck <command>` | start a command under the deck, then open the dashboard |
 | `cli-deck -r` / `--resume` | re-attach to a running deck |
-| `cli-deck -l` | list live decks so you can pick one to resume |
-| `cli-deck --no-launch <cmd>` | register the command only; print the attach recipe |
+| `cli-deck -l` | list live decks and the processes in each, so you can pick one to resume |
+| `cli-deck -d <cmd>` | register the command only; print the attach recipe (no command: just start the helper) |
+| `cli-deck -p <cmd>` | start the command with protection on, like pressing `p` (default: at most 5 quick restarts in a row, 5s apart); glue values with `=`: `-p=-1,2` = unlimited, 2s |
+| `cli-deck --stop <id>` | stop a row |
+| `cli-deck --restart <id>` | restart a row: same command, new id |
+| `cli-deck --rm <id>` | remove an exited row; its log stays |
+| `cli-deck --up <id>` | turn a row's protection off (long form: `--unprotect`) |
 | `cli-deck -- -L 80:localhost:80` | `--` marks "everything after this is my command" |
 
-`-l` lists **decks**, not processes. A deck is live when its recorded pid still
-exists; dead entries are swept. The deck name comes from `CLI_DECK_NAME`
-(default `default`).
+`-l` prints one line per deck, with its processes indented below in the
+dashboard's columns; a filled `protect` column marks a protected row. A deck
+is live when its recorded pid still exists; dead entries are swept. The deck
+name comes from `CLI_DECK_NAME` (default `default`).
+
+`--stop`, `--restart`, `--rm` and `--up` act on the deck named by
+`CLI_DECK_NAME`. A protected row refuses `--stop` and `--rm` until you `--up`
+it; see [Row actions from the shell](docs/reference.md#row-actions-from-the-shell).
 
 ## Dashboard keys
 

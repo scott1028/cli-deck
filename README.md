@@ -16,8 +16,8 @@
 | **shell 環境照用不誤** | 指令走 `bash -ic` 執行，你的 alias、function、PATH 全都還在。 | `cli-deck vim notes.md` |
 | **離開期間發生了什麼，接回來先回放一遍** | 最近約 200 KB 的畫面輸出會存著，重新接上時直接重播。 | 按 `t` |
 | **用看的就好，不會按到** | `enter` 開唯讀的即時輸出加歷史捲動，按任何鍵都不會送進程式。 | 按 `enter` |
-| **掛了自動救回來（保護模式）** | 按 `p` 標記後，程式自己結束時 daemon 會自動把它重啟。 | 按 `p` |
-| **日誌留著，但不會撐爆磁碟** | 每個程式有一份原始日誌，成長有上限，到頂自動截半。 | `--no-launch` 會列出日誌路徑 |
+| **掛了自動救回來（保護模式）** | 按 `p` 標記後，程式自己結束時 daemon 會自動把它重啟。 | 按 `p`，或 `cli-deck -p <cmd>` |
+| **日誌留著，但不會撐爆磁碟** | 每個程式有一份原始日誌，成長有上限，到頂自動截半。 | `cli-deck -d <cmd>` 會列出日誌路徑 |
 
 ## 安裝
 
@@ -73,7 +73,7 @@ cli-deck vim notes.md    # 把 vim 交給 deck 跑，同時打開儀表板
 
 ```sh
 cli-deck --resume        # 接回正在跑的 deck（縮寫：cli-deck -r）
-cli-deck -l              # 列出還活著的 deck：名稱、socket、pid、跑了多久
+cli-deck -l              # 列出還活著的 deck（名稱、socket、pid、跑了多久）和裡面的程式
 ```
 
 選 vim 那列按 `t` 就接管畫面，`Ctrl-]` 回儀表板。整個過程程式沒停過一秒。
@@ -85,12 +85,22 @@ cli-deck -l              # 列出還活著的 deck：名稱、socket、pid、跑
 | `cli-deck` | 打開儀表板（需要時順手把 daemon 起起來） |
 | `cli-deck <command>` | 把指令交給 deck 跑，然後打開儀表板 |
 | `cli-deck -r` / `--resume` | 接回正在跑的 deck |
-| `cli-deck -l` | 列出活著的 deck，方便挑一個接回 |
-| `cli-deck --no-launch <cmd>` | 只註冊不打開儀表板，印出接回方法 |
+| `cli-deck -l` | 列出活著的 deck 和每個 deck 裡的程式，方便挑一個接回 |
+| `cli-deck -d <cmd>` | 只註冊不打開儀表板，印出接回方法（不帶指令就只把 daemon 起起來） |
+| `cli-deck -p <cmd>` | 開保護再跑，跟按 `p` 一樣（預設連續快速重啟最多 5 次、每次等 5 秒）；要改就用 `=` 黏著：`-p=-1,2` = 不限次數、等 2 秒 |
+| `cli-deck --stop <id>` | 停止一列 |
+| `cli-deck --restart <id>` | 重啟一列：同一組指令，id 換新的 |
+| `cli-deck --rm <id>` | 移除已經結束的列，日誌留著 |
+| `cli-deck --up <id>` | 關掉一列的保護（長寫法 `--unprotect`） |
 | `cli-deck -- -L 80:localhost:80` | `--` 之後全部算你的指令 |
 
-`-l` 列的是 **deck**，不是程式。deck 記錄的 pid 還在，就算還活著；
+`-l` 每個 deck 印一行，底下縮排列出它的程式，欄位跟儀表板一樣；
+`protect` 欄有值就是受保護的列。deck 記錄的 pid 還在，就算還活著；
 死掉的項目會自動清掉。deck 的名字來自 `CLI_DECK_NAME`（預設 `default`）。
+
+`--stop`、`--restart`、`--rm`、`--up` 只作用在 `CLI_DECK_NAME` 指定的 deck。
+受保護的列要先 `--up`，才能 `--stop` 或 `--rm`，見
+[從 shell 操作列](docs/reference.md#row-actions-from-the-shell)（英文）。
 
 ## 儀表板按鍵
 

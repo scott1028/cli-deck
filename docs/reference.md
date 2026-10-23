@@ -26,10 +26,13 @@ Closing the TUI kills nothing: the daemon is spawned with
 
 The first argument that is not a known option starts the command; the rest is
 joined into one string and run as `bash -ic <string>`, so `~/.bashrc` aliases,
-functions and PATH apply. Every cli-deck option is a flag, so parsing stays
-unambiguous; a command that must **start** with a flag is disambiguated with
-`--`: `cli-deck -- -L 80:localhost:80`. `--resume`, `-l`, `--version`,
-`--no-launch` and the hidden `--daemon` are unchanged. The wrapper then opens
+functions and PATH apply. Options before the command are flags, with two
+exceptions that keep parsing unambiguous: a row action (`--stop`, `--restart`,
+`--rm`, `--up`, `--unprotect`) takes the next token as its ID, and `-p` takes a
+value only when glued with `=` (`-p=5,2`; `-p 5,2 make` runs the command
+`5,2 make`). A command that must **start** with a flag is disambiguated with
+`--`: `cli-deck -- -L 80:localhost:80`. `--resume`, `--version` and the hidden
+`--daemon` are unchanged. The wrapper then opens
 the dashboard with the new process selected (older processes keep their rows);
 it does **not** attach directly. Press `t` for full-screen takeover — `Ctrl-]`
 returns to the dashboard — or `d` to close the dashboard; either way the
@@ -39,7 +42,8 @@ the ring buffer first, so you see what happened while away. `cli-deck
 <command>` and `--resume` open this same dashboard, so every takeover goes
 through the Textual suspend/pump path described below.
 
-`--no-launch` prints the recipe instead of opening the dashboard:
+`-d` / `--detach` (the dashboard's `d`) prints the recipe instead of opening
+the dashboard:
 
 ```text
 deck:    default
@@ -50,6 +54,62 @@ cwd:     /home/scott/project
 log:     /tmp/cli-deck-1000/f0011108146a.logs/4890c5d1.log
 attach:  cli-deck --resume   (select the row, press t; Ctrl-] returns to the dashboard)
 ```
+
+With `-p` the recipe gains a `protect: on (5, 5s)` line before `attach:`, in
+the same format as the `protect` column (`-p=-1,1` prints `on (∞, 1s)`).
+`cli-deck -d` with no command starts (or reuses) the deck and prints only the
+`deck:`, `socket:` and `attach:` lines. `-d` and `--resume` exclude each other.
+
+### Protecting a new command (`-p`)
+
+`-p` / `--protect` turns [protection](#protection) on for the new command. It is
+the dashboard's `p` dialog as a flag, with the same two fields:
+
+| Form | Quick-restart limit | Restart gap |
+|---|---|---|
+| `-p` | 5 | 5s |
+| `-p=3` | 3 | 5s |
+| `-p=,2` | 5 (an empty field keeps its default) | 2s |
+| `-p=-1,0.5` | unlimited | 0.5s |
+
+The limit is `-1` (unlimited) or an integer 0+; the gap is a number of seconds,
+at least 0.1. Anything else, or `-p` without a command, is a usage error
+(exit 2). It combines with `-d`: `cli-deck -d -p=-1,2 ./server`.
+
+The wrapper sends `add`, then `protect` on the same connection, so a command
+that exits before `protect` arrives is not restarted. If `protect` fails, the
+wrapper prints the error and exits 1; the command keeps running unprotected.
+
+### Row actions from the shell
+
+The dashboard's `x`, `r` and `p`-off also exist as options. Each takes a row ID,
+which `cli-deck -l` shows: one line per deck, its processes indented below in
+the dashboard's columns (`id`, `state`, `exit`, `started`, `protect`, `name`),
+`(no processes)` for an empty deck, and `(unreachable)` when the deck cannot be
+reached or sends no snapshot within 2s.
+
+| Option | Dashboard | Does | Refuses (exit 1) |
+|---|---|---|---|
+| `--stop ID` | `x` on a running row, without the prompt | starts the SIGINT -> SIGTERM -> SIGKILL escalation and returns; the row reads `stopping` until the process is gone | a protected row. An unprotected exited row prints `'<name>' (<id>) already exited` and exits 0 |
+| `--restart ID` | `r`, without the prompt | respawns the row: same command, cwd and env overlay, new id, protection kept | nothing: it does not check protection |
+| `--rm ID` | `x` on an exited row | removes the row and prints where the raw log was kept | a protected row; a `running` or `stopping` row |
+| `--up ID`, `--unprotect ID` | `p` on a protected row | turns protection off and cancels a restart still waiting on its gap | — |
+
+They act on the deck named by `CLI_DECK_NAME` and need it running; otherwise
+they exit 1 with `no running deck`. The ID must match exactly. One row action
+per call, and none together with a command, `-d`, `-p` or `--resume` (usage
+error, exit 2). The whole call gives up after 5s (exit 1).
+
+The CLI has no confirm dialog, so protection is its safety catch: **protected**
+means the `protect` column is not empty, which includes an exited row waiting
+out its gap. Retiring a protected process takes three calls:
+
+```text
+cli-deck --up ID -> cli-deck --stop ID -> (row reads exited) -> cli-deck --rm ID
+```
+
+Skipping `--up` gets `'<name>' (<id>) is protected; turn it off first: cli-deck --up <id>`.
+The check lives in the CLI only; the dashboard's `x` and `r` work as before.
 
 ## Caller environment
 
@@ -249,7 +309,7 @@ including a final `stop`.
 ```
 cli_deck/
 ├── __init__.py
-├── __main__.py      # wrapper prefix / --resume / -l / --no-launch / --daemon
+├── __main__.py      # wrapper prefix / -d / -p / row actions / --resume / -l / --daemon
 ├── app.py           # Textual TUI (disposable client) + takeover wiring
 ├── deckd.py         # daemon + protocol + DeckClient + run_takeover + paths
 │                    # + sweep_stale_decks / list_decks

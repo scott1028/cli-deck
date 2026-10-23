@@ -1,4 +1,4 @@
-"""M2: the `cli-deck <command...>` wrapper prefix, --no-launch and env overlay."""
+"""M2: the `cli-deck <command...>` wrapper prefix, -d and env overlay."""
 import asyncio
 import fcntl
 import os
@@ -51,8 +51,8 @@ class WrapperPrefixTest(unittest.TestCase):
         # options stay options; the first bare token starts the command
         self.assertEqual(_split_wrapper(["--resume"]), (["--resume"], []))
         self.assertEqual(_split_wrapper(["ssh", "prod"]), ([], ["ssh", "prod"]))
-        self.assertEqual(_split_wrapper(["--no-launch", "vim", "f"]),
-                         (["--no-launch"], ["vim", "f"]))
+        self.assertEqual(_split_wrapper(["-d", "vim", "f"]),
+                         (["-d"], ["vim", "f"]))
         # `--` disambiguates a command that must start with a flag
         self.assertEqual(_split_wrapper(["--", "-L", "80:localhost:80"]),
                          ([], ["-L", "80:localhost:80"]))
@@ -60,7 +60,7 @@ class WrapperPrefixTest(unittest.TestCase):
                          (["--resume"], ["-l"]))
 
     def test_prefix_registers_and_opens_dashboard(self):
-        name = "m2-attach"
+        name = f"m2-attach-{os.getpid()}"
         sock, _ = deck_paths(name)
         try:
             rc, out = self._run_on_pty(name, ["echo", MARK])
@@ -74,7 +74,7 @@ class WrapperPrefixTest(unittest.TestCase):
             self._teardown(name)
 
     def test_process_survives_wrapper_exit(self):
-        name = "m2-survive"
+        name = f"m2-survive-{os.getpid()}"
         sock, _ = deck_paths(name)
         try:
             rc, out = self._run_on_pty(name, ["sleep", "300"], read_seconds=2.0)
@@ -86,11 +86,11 @@ class WrapperPrefixTest(unittest.TestCase):
         finally:
             self._teardown(name)
 
-    def test_no_launch_prints_recipe(self):
-        name = "m2-nolaunch"
+    def test_detach_prints_recipe(self):
+        name = f"m2-detach-{os.getpid()}"
         sock, _ = deck_paths(name)
         try:
-            rc, out = self._run_plain(name, ["--no-launch", "echo", "hi"])
+            rc, out = self._run_plain(name, ["-d", "echo", "hi"])
             self.assertEqual(rc, 0)
             for token in ("deck:", "socket:", "id:", "command:", "attach:"):
                 self.assertIn(token, out)
@@ -102,9 +102,9 @@ class WrapperPrefixTest(unittest.TestCase):
             self._teardown(name)
 
     def test_env_overlay_reaches_child(self):
-        name = "m2-env"
+        name = f"m2-env-{os.getpid()}"
         try:
-            _, out = self._run_plain(name, ["--no-launch", "echo FOO=$FOO"],
+            _, out = self._run_plain(name, ["-d", "echo FOO=$FOO"],
                                      env_extra={"FOO": "bar"})
             log = self._await_log_output(name, self._recipe_id(out), b"FOO=bar")
             self.assertIn(b"FOO=bar", log)
@@ -112,11 +112,11 @@ class WrapperPrefixTest(unittest.TestCase):
             self._teardown(name)
 
     def test_exported_bash_function_visible_in_child(self):
-        name = "m2-func"
+        name = f"m2-func-{os.getpid()}"
         body = "() {  echo fn-visible\n}"
         try:
             _, out = self._run_plain(
-                name, ["--no-launch", "declare -F m2fn && m2fn"],
+                name, ["-d", "declare -F m2fn && m2fn"],
                 env_extra={"BASH_FUNC_m2fn%%": body})
             log = self._await_log_output(name, self._recipe_id(out), b"fn-visible")
             self.assertIn(b"m2fn", log)       # declare -F m2fn found it
@@ -169,7 +169,7 @@ class WrapperPrefixTest(unittest.TestCase):
 
     def _run_plain(self, name: str, args: list[str],
                    env_extra: dict | None = None) -> tuple[int, str]:
-        """Run the wrapper with pipes (used with --no-launch: no attach, no tty)."""
+        """Run the wrapper with pipes (used with -d: no attach, no tty)."""
         proc = subprocess.run([sys.executable, "-m", "cli_deck", *args],
                               env=self._env(name, env_extra),
                               capture_output=True, text=True, timeout=60)

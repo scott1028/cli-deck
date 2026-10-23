@@ -114,7 +114,7 @@ jobs:
         run: |
           ./"$APPIMAGE" --help
           # Starts the deck daemon the way the TUI does; it must outlive the wrapper.
-          ./"$APPIMAGE" --no-launch true
+          ./"$APPIMAGE" -d true
           ./"$APPIMAGE" --list
           pkill -f "cli_de[c]k --daemon"
       - uses: actions/upload-artifact@v7
